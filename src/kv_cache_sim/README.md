@@ -13,6 +13,8 @@ This package will hold the simulator for the project.
 - `FIFOPolicy`: evicts the oldest stored chunk.
 - `LRUPolicy`: evicts the least recently accessed chunk.
 - `LateTokenPriorityPolicy`: evicts earlier prompt chunks first.
+- `CostModel`: estimates recompute and load time.
+- `RecomputeLoadScheduler`: chooses recompute vs load for each chunk.
 
 ## Global Cache Identity
 
@@ -32,7 +34,7 @@ src/kv_cache_sim/
 ├── models.py          # core request/cache/memory objects
 ├── cache.py           # policy-driven cache manager
 ├── policies.py        # FIFO, LRU, Late-Token Priority
-├── scheduler.py       # recompute-vs-load decisions
+├── scheduler.py       # recompute-vs-load cost decisions
 ├── workloads.py       # synthetic prompt and concurrency generation
 ├── metrics.py         # latency, throughput, hit-rate collection
 └── experiments.py     # reusable experiment runner
@@ -45,7 +47,12 @@ keeps the project runnable on normal class hardware while still letting us model
 the operating-systems questions from the proposal: scheduling, contention,
 memory hierarchy behavior, and eviction policy.
 
-The next scheduler layer should include a Cake-style bidirectional baseline:
-compute chunks from the beginning, load chunks from the end, and stop when the
-two fronts meet. The project extension is to combine that with global cache
-retention policies such as Late-Token Priority.
+## IMPT Source Code Notes To Improve On
+
+The current scheduler makes independent per-chunk decisions. It is a very simple scheduler that
+decides to compute or load based on a simple cost equation.
+
+To make a better Cake-style scheduler wee need to use the same cost model but run two fronts in parallel: compute chunks from the beginning, load chunks from the end, and stop when the two
+fronts meet. 
+
+Then the projects extension is to combine that with global cacheretention policies such as Late-Token Priority.

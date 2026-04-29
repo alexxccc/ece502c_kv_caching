@@ -41,8 +41,8 @@ The professor's proposal feedback is reflected in three design choices:
 
 ## Current Status
 
-This version contains the project scaffold, core simulator data models, and the
-first eviction policies. It does not yet implement recompute-vs-load scheduling.
+This version contains the project scaffold, core simulator data models, the
+first eviction policies, and a cost-aware recompute-vs-load scheduler.
 
 Implemented so far:
 
@@ -53,13 +53,16 @@ Implemented so far:
 - fixed-size and variable-size chunking helpers
 - policy-driven cache manager
 - FIFO, LRU, and Late-Token Priority eviction policies
+- cost model for recompute-vs-load scheduling
+- scheduler that chooses whether each chunk should be recomputed or loaded
 - a small example script that builds a toy cache state
 - a policy comparison script that forces evictions
 - a global-cache reuse example with two requests sharing one prefix
+- a recompute-vs-load scheduling example
 
 Next steps:
 
-1. Add a scheduler that chooses recompute vs load based on estimated cost.
+1. Add a Cake-style bidirectional scheduler using the same cost model.
 2. Add synthetic workload generation for 4k-16k token prompts.
 3. Add experiment runners and plotting scripts.
 4. Add final-report metrics and graphs.
@@ -70,6 +73,7 @@ Next steps:
 .
 +-- examples/
 |   +-- basic_simulation.py
+|   +-- choose_recompute_vs_load.py
 |   +-- compare_eviction_policies.py
 |   +-- global_cache_reuse.py
 +-- src/
@@ -78,6 +82,7 @@ Next steps:
 |       +-- cache.py
 |       +-- models.py
 |       +-- policies.py
+|       +-- scheduler.py
 |       +-- README.md
 +-- README.md
 ```
@@ -88,6 +93,7 @@ From this directory:
 
 ```powershell
 python .\examples\basic_simulation.py
+python .\examples\choose_recompute_vs_load.py
 python .\examples\compare_eviction_policies.py
 python .\examples\global_cache_reuse.py
 ```
@@ -96,4 +102,5 @@ The basic example prints a few synthetic KV chunks, places them into a GPU
 memory tier, and shows how much capacity remains. The policy comparison example
 fills a small GPU tier and shows which chunk each eviction policy removes. The
 global-cache example shows two different requests reusing the same cached prefix
-through a shared `cache_id`.
+through a shared `cache_id`. The scheduler example estimates recompute and load
+time for each chunk, then chooses the cheaper action.
