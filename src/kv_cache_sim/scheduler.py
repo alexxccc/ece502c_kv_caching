@@ -98,6 +98,48 @@ class ScheduleSummary:
         return sum(decision.estimated_time_ms for decision in self.decisions)
 
 
+@dataclass(frozen=True)
+class CakeOperation:
+    """One operation on Cake's compute or I/O front."""
+
+    chunk: KVChunk
+    action: ScheduleAction
+    start_time_ms: float
+    end_time_ms: float
+    source_tier: CachePlacement | None
+
+    @property
+    def duration_ms(self) -> float:
+        return self.end_time_ms - self.start_time_ms
+
+
+@dataclass(frozen=True)
+class CakeScheduleSummary:
+    """Timeline produced by the Cake-style bidirectional scheduler."""
+
+    operations: tuple[CakeOperation, ...]
+    compute_front_time_ms: float
+    load_front_time_ms: float
+
+    @property
+    def total_estimated_ttft_ms(self) -> float:
+        return max(self.compute_front_time_ms, self.load_front_time_ms)
+
+    @property
+    def recompute_count(self) -> int:
+        return sum(
+            operation.action == ScheduleAction.RECOMPUTE
+            for operation in self.operations
+        )
+
+    @property
+    def load_count(self) -> int:
+        return sum(
+            operation.action == ScheduleAction.LOAD
+            for operation in self.operations
+        )
+
+
 class RecomputeLoadScheduler:
     # Choose whether each KV chunk should be recomputed or loaded
 
@@ -167,4 +209,92 @@ class RecomputeLoadScheduler:
         # Schedule a batch of chunks independently
         return ScheduleSummary(
             decisions=tuple(self.choose_for_chunk(chunk) for chunk in chunks)
+        )
+
+
+class CakeBidirectionalScheduler:
+    """
+    Simulates Cake's two-front compute/load schedule.
+
+    The compute front starts at the beginning of the prompt and moves forward.
+    The I/O front starts at the end and moves backward. 
+    Each front advances whenthat resource becomes available, and the schedule stops when the fronts
+    meet. The estimated TTFT is the slower of the two resource timelines.
+    """
+
+    def __init__(
+        self,
+        memory_tiers: list[MemoryTier],
+        cost_model: CostModel,
+    ) -> None:
+        if not memory_tiers:
+            raise ValueError("memory_tiers must contain at least one tier")
+
+        self.memory_tiers = memory_tiers
+        self.cost_model = cost_model
+
+    def find_cached_chunk(self, chunk: KVChunk) -> tuple[MemoryTier, KVChunk] | None:
+        """Find a chunk in the configured memory tiers by global cache key."""
+
+        for tier in self.memory_tiers:
+            cached_chunk = tier.chunks.get(chunk.cache_key)
+            if cached_chunk is not None:
+                return tier, cached_chunk
+
+        return None
+
+    def schedule_chunks(self, chunks: list[KVChunk]) -> CakeScheduleSummary:
+        """Build a Cake-style bidirectional schedule for prompt chunks."""
+
+        ordered_chunks = sorted(chunks, key=lambda chunk: chunk.chunk_index)
+        compute_index = 0
+        load_index = len(ordered_chunks) - 1
+        compute_time_ms = 0.0
+        load_time_ms = 0.0
+        operations: list[CakeOperation] = []
+
+        while compute_index <= load_index:
+            load_candidate = ordered_chunks[load_index]
+            cached = self.find_cached_chunk(load_candidate)
+            should_load = cached is not None and load_time_ms <= compute_time_ms
+
+            if should_load:
+                source_tier, cached_chunk = cached
+                start_time_ms = load_time_ms
+                duration_ms = self.cost_model.estimate_load_time_ms(
+                    cached_chunk,
+                    source_tier,
+                )
+                load_time_ms += duration_ms
+                operations.append(
+                    CakeOperation(
+                        chunk=load_candidate,
+                        action=ScheduleAction.LOAD,
+                        start_time_ms=start_time_ms,
+                        end_time_ms=load_time_ms,
+                        source_tier=source_tier.name,
+                    )
+                )
+                load_index -= 1
+                continue
+
+            compute_candidate = ordered_chunks[compute_index]
+            start_time_ms = compute_time_ms
+            duration_ms = self.cost_model.estimate_compute_time_ms(compute_candidate)
+            compute_time_ms += duration_ms
+            operations.append(
+                CakeOperation(
+                    chunk=compute_candidate,
+                    action=ScheduleAction.RECOMPUTE,
+                    start_time_ms=start_time_ms,
+                    end_time_ms=compute_time_ms,
+                    source_tier=None,
+                )
+            )
+            compute_index += 1
+
+        return CakeScheduleSummary(
+            operations=tuple(operations),
+            compute_front_time_ms=compute_time_ms,
+            load_front_time_ms=load_time_ms,
         )

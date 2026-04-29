@@ -1,6 +1,6 @@
 # `kv_cache_sim`
 
-This package will hold the simulator for the project.
+This package holds the simulator for the project.
 
 ## What Exists Now
 
@@ -15,6 +15,7 @@ This package will hold the simulator for the project.
 - `LateTokenPriorityPolicy`: evicts earlier prompt chunks first.
 - `CostModel`: estimates recompute and load time.
 - `RecomputeLoadScheduler`: chooses recompute vs load for each chunk.
+- `CakeBidirectionalScheduler`: simulates Cake's two-front schedule.
 
 ## Global Cache Identity
 
@@ -31,13 +32,13 @@ request independently.
 
 ```text
 src/kv_cache_sim/
-├── models.py          # core request/cache/memory objects
-├── cache.py           # policy-driven cache manager
-├── policies.py        # FIFO, LRU, Late-Token Priority
-├── scheduler.py       # recompute-vs-load cost decisions
-├── workloads.py       # synthetic prompt and concurrency generation
-├── metrics.py         # latency, throughput, hit-rate collection
-└── experiments.py     # reusable experiment runner
++-- models.py          # core request/cache/memory objects
++-- cache.py           # policy-driven cache manager
++-- policies.py        # FIFO, LRU, Late-Token Priority
++-- scheduler.py       # recompute-vs-load and Cake-style scheduling
++-- workloads.py       # synthetic prompt and concurrency generation
++-- metrics.py         # latency, throughput, hit-rate collection
++-- experiments.py     # reusable experiment runner
 ```
 
 ## Design Notes
@@ -47,12 +48,24 @@ keeps the project runnable on normal class hardware while still letting us model
 the operating-systems questions from the proposal: scheduling, contention,
 memory hierarchy behavior, and eviction policy.
 
+The inputs of the current simulator are very simple and in the form:
+    request = Request(
+        request_id="request-001",
+        cache_id="document-prefix-42",
+        arrival_time_ms=0.0,
+        prompt_tokens=4096,
+    )
+  It still allows for the patterns of the scheduler to be determined.
+
+## Source Code Notes
+
+The scheduler module currently includes two schedulers:
+
+- `RecomputeLoadScheduler`: makes independent per-chunk decisions.
+- `CakeBidirectionalScheduler`: runs a Cake-style baseline with compute moving
+  forward from the beginning and I/O loading backward from the end.
+
 ## IMPT Source Code Notes To Improve On
 
-The current scheduler makes independent per-chunk decisions. It is a very simple scheduler that
-decides to compute or load based on a simple cost equation.
-
-To make a better Cake-style scheduler wee need to use the same cost model but run two fronts in parallel: compute chunks from the beginning, load chunks from the end, and stop when the two
-fronts meet. 
-
-Then the projects extension is to combine that with global cacheretention policies such as Late-Token Priority.
+The project extension is to combine the Cake-style schedule with global cache
+retention policies such as Late-Token Priority.

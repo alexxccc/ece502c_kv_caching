@@ -11,6 +11,9 @@ from kv_cache_sim.models import (
 )
 from kv_cache_sim.policies import FIFOPolicy, LRUPolicy, LateTokenPriorityPolicy
 from kv_cache_sim.scheduler import (
+    CakeBidirectionalScheduler,
+    CakeOperation,
+    CakeScheduleSummary,
     CostModel,
     RecomputeLoadScheduler,
     ScheduleAction,
@@ -22,6 +25,9 @@ __all__ = [
     "CacheManager",
     "CachePlacement",
     "CacheStoreResult",
+    "CakeBidirectionalScheduler",
+    "CakeOperation",
+    "CakeScheduleSummary",
     "CostModel",
     "FIFOPolicy",
     "KVChunk",
