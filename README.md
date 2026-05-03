@@ -71,55 +71,89 @@ Implemented so far:
 - a policy comparison script that forces evictions
 - a global-cache reuse example with two requests sharing one prefix
 - a recompute-vs-load scheduling example
+- **Cake prefill + global GPU cache** (`prefill_simulation.py`): run Cake (or
+  linear baseline), then materialize KV onto a policy-managed GPU tier with optional cold tiers
+- **synthetic workloads** (`workload.py`): repeatable random requests over a document pool
+- **experiment driver** (`examples/run_cake_global_experiment.py`): compare Cake vs linear
+  scheduling with FIFO / LRU / Late-Token Priority; CSV metrics and matplotlib figures under `results/`
 
-Next steps:
-
-1. Connect the Cake-style scheduler to global cache retention.
-        Use Late-Token priority eviction or similar.
-2. Create a synthetic workload generator for token prompts.
-2. Test differnet combinations of Cake + global cache vs Cake vs global cache etc.
-3. Add final-report metrics and graphs.
+Further documentation for these additions: [docs/ADDED_FEATURES.md](docs/ADDED_FEATURES.md).
 
 ## Repository Layout
 
 ```text
 .
++-- docs/
+|   +-- ADDED_FEATURES.md    # Cake+global cache integration, workload, experiments
++-- results/
+|   +-- README.md            # experiments: outputs, presets, how to read CSVs & figures
 +-- examples/
 |   +-- basic_simulation.py
 |   +-- cake_bidirectional_schedule.py
+|   +-- cake_global_cache_prefill.py
 |   +-- choose_recompute_vs_load.py
 |   +-- compare_eviction_policies.py
 |   +-- global_cache_reuse.py
+|   +-- run_cake_global_experiment.py
++-- requirements.txt         # optional: matplotlib for experiment plots
 +-- src/
 |   +-- kv_cache_sim/
 |       +-- __init__.py
 |       +-- cache.py
 |       +-- models.py
 |       +-- policies.py
+|       +-- prefill_simulation.py
 |       +-- scheduler.py
+|       +-- workload.py
 |       +-- README.md
 +-- README.md
 ```
 
-## Running the Example
+## Running the Examples
 
-From this directory:
+From this directory, set `PYTHONPATH` so imports resolve (`src` contains `kv_cache_sim`):
+
+**Linux / macOS**
+
+```bash
+export PYTHONPATH=src
+pip install -r requirements.txt   # optional, for experiment graphs
+
+python examples/basic_simulation.py
+python examples/cake_bidirectional_schedule.py
+python examples/cake_global_cache_prefill.py
+python examples/choose_recompute_vs_load.py
+python examples/compare_eviction_policies.py
+python examples/global_cache_reuse.py
+python examples/run_cake_global_experiment.py
+```
+
+**Windows (PowerShell)**
 
 ```powershell
+$env:PYTHONPATH="src"
+pip install -r requirements.txt
+
 python .\examples\basic_simulation.py
 python .\examples\cake_bidirectional_schedule.py
+python .\examples\cake_global_cache_prefill.py
 python .\examples\choose_recompute_vs_load.py
 python .\examples\compare_eviction_policies.py
 python .\examples\global_cache_reuse.py
+python .\examples\run_cake_global_experiment.py
 ```
 
 1. The basic example prints a few synthetic KV chunks, places them into a GPU
-memory tier, and shows how much capacity remains. 
+memory tier, and shows how much capacity remains.
 2. The policy comparison example fills a small GPU tier and shows which chunk
-each eviction policy removes. 
+each eviction policy removes.
 3. The global-cache example shows two different requests reusing the same cached
-prefix through a shared `cache_id`. 
+prefix through a shared `cache_id`.
 4. The scheduler example estimates recompute and load time for each chunk,
-then chooses the cheaper action. 
+then chooses the cheaper action.
 5. The Cake-style example simulates compute moving forward from the first chunk
 while I/O loads backward from the last chunk.
+6. **`cake_global_cache_prefill`** ties Cake scheduling to a Late-Token global GPU cache and disk-backed KV.
+7. **`run_cake_global_experiment`** compares scenarios (Cake vs sequential baseline × eviction policies) and writes `results/metrics.csv`, `results/summary_by_scenario.csv`, and PNG figures when matplotlib is installed.
+
+Interpretation of experiment outputs and representative numbers: [results/README.md](results/README.md).

@@ -16,6 +16,12 @@ This package holds the simulator for the project.
 - `CostModel`: estimates recompute and load time.
 - `RecomputeLoadScheduler`: chooses recompute vs load for each chunk.
 - `CakeBidirectionalScheduler`: simulates Cake's two-front schedule.
+- `prefill_simulation`: after Cake or linear scheduling, materialize KV on a
+  `CacheManager` GPU tier (and optional cold tiers); returns `PrefillMetrics`.
+- `workload`: `WorkloadConfig`, `generate_requests`, and helpers to seed disk-like
+  tiers for cold-load experiments.
+
+See also [docs/ADDED_FEATURES.md](../../docs/ADDED_FEATURES.md) in the repo root.
 
 ## Global Cache Identity
 
@@ -28,17 +34,16 @@ This distinction lets the simulator model persistent CPU/GPU cache reuse across
 requests, which is the main improvement opportunity over treating each Cake
 request independently.
 
-## Planned Modules
+## Layout
 
 ```text
 src/kv_cache_sim/
-+-- models.py          # core request/cache/memory objects
-+-- cache.py           # policy-driven cache manager
-+-- policies.py        # FIFO, LRU, Late-Token Priority
-+-- scheduler.py       # recompute-vs-load and Cake-style scheduling
-+-- workloads.py       # synthetic prompt and concurrency generation
-+-- metrics.py         # latency, throughput, hit-rate collection
-+-- experiments.py     # reusable experiment runner
++-- models.py             # core request/cache/memory objects
++-- cache.py              # policy-driven cache manager
++-- policies.py           # FIFO, LRU, Late-Token Priority
++-- scheduler.py          # recompute-vs-load and Cake-style scheduling
++-- prefill_simulation.py # Cake/linear + global cache materialization
++-- workload.py           # synthetic requests and cold-tier seeding
 ```
 
 ## Design Notes
@@ -65,7 +70,9 @@ The scheduler module currently includes two schedulers:
 - `CakeBidirectionalScheduler`: runs a Cake-style baseline with compute moving
   forward from the beginning and I/O loading backward from the end.
 
-## IMPT Source Code Notes To Improve On
+## Extension (implemented)
 
-The project extension is to combine the Cake-style schedule with global cache
-retention policies such as Late-Token Priority.
+Cake-style scheduling is combined with global cache retention via
+`simulate_cake_prefill_with_global_cache` and a `CacheManager` using policies
+such as `LateTokenPriorityPolicy` (see `examples/cake_global_cache_prefill.py`
+and `examples/run_cake_global_experiment.py`).
