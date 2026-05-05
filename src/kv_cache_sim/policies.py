@@ -94,7 +94,7 @@ class LateTokenPriorityPolicy(EvictionPolicy):
             tier.chunks.values(),
             key=lambda chunk: (
                 chunk.late_token_priority,
-                chunk.cache_id,
                 chunk.chunk_index,
+                chunk.cache_id
             ),
         )

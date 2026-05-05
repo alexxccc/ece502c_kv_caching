@@ -85,8 +85,7 @@ class ScheduleSummary:
     @property
     def recompute_count(self) -> int:
         return sum(
-            decision.action == ScheduleAction.RECOMPUTE
-            for decision in self.decisions
+            decision.action == ScheduleAction.RECOMPUTE for decision in self.decisions
         )
 
     @property
@@ -128,15 +127,13 @@ class CakeScheduleSummary:
     @property
     def recompute_count(self) -> int:
         return sum(
-            operation.action == ScheduleAction.RECOMPUTE
-            for operation in self.operations
+            operation.action == ScheduleAction.RECOMPUTE for operation in self.operations
         )
 
     @property
     def load_count(self) -> int:
         return sum(
-            operation.action == ScheduleAction.LOAD
-            for operation in self.operations
+            operation.action == ScheduleAction.LOAD for operation in self.operations
         )
 
 
@@ -256,7 +253,17 @@ class CakeBidirectionalScheduler:
         while compute_index <= load_index:
             load_candidate = ordered_chunks[load_index]
             cached = self.find_cached_chunk(load_candidate)
-            should_load = cached is not None and load_time_ms <= compute_time_ms
+            
+            # Do one step look ahead to see what would be cheapest if the next estimated chunk time was added
+            load_next_ms = float("inf")
+            if cached is not None:
+                source_tier, cached_chunk = cached
+                load_next_ms = load_time_ms + self.cost_model.estimate_load_time_ms(
+                    cached_chunk, source_tier
+                )
+            compute_next_ms = compute_time_ms + self.cost_model.estimate_compute_time_ms(ordered_chunks[compute_index])
+
+            should_load = load_next_ms <= compute_next_ms
 
             if should_load:
                 source_tier, cached_chunk = cached
