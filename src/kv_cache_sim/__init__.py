@@ -7,6 +7,7 @@ from kv_cache_sim.models import (
     MemoryTier,
     Request,
     chunk_request,
+    chunk_request_with_prefix_split,
     chunk_request_with_sizes,
 )
 from kv_cache_sim.policies import FIFOPolicy, LRUPolicy, LateTokenPriorityPolicy
@@ -30,8 +31,6 @@ from kv_cache_sim.workload import (
     WorkloadConfig,
     generate_requests,
     make_disk_tier,
-    seed_disk_for_workload,
-    seed_tier_from_request,
 )
 
 __all__ = [
@@ -56,11 +55,10 @@ __all__ = [
     "ScheduleSummary",
     "WorkloadConfig",
     "chunk_request",
+    "chunk_request_with_prefix_split",
     "chunk_request_with_sizes",
     "generate_requests",
     "make_disk_tier",
-    "seed_disk_for_workload",
-    "seed_tier_from_request",
     "simulate_cake_prefill_with_global_cache",
     "simulate_linear_prefill_with_global_cache",
 ]

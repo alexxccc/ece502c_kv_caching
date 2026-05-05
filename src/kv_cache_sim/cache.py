@@ -60,6 +60,51 @@ class CacheManager:
             evicted_chunks=tuple(evicted_chunks),
         )
 
+    def store_replacing(self, chunk: KVChunk) -> CacheStoreResult:
+        """Store chunk, replacing any existing entry with lesser token coverage.
+
+        Unlike ``store()``, which skips re-storing a chunk that is already
+        present, this method first checks whether the resident chunk covers at
+        least as many tokens as the incoming one.  If the resident version is
+        smaller (its ``end_token`` is lower), it is evicted before the new
+        chunk is inserted — this handles the case where a later request
+        recomputes a shared-prefix chunk that reaches further into the document
+        than what was previously cached.
+
+        If the existing chunk already meets or exceeds the required coverage,
+        it is left unchanged (no unnecessary eviction and re-store).
+        """
+
+        if chunk.size_bytes > self.tier.capacity_bytes:
+            raise ValueError(
+                f"chunk {chunk.chunk_index} is larger than "
+                f"{self.tier.name.value} capacity"
+            )
+
+        existing = self.tier.chunks.get(chunk.cache_key)
+        if existing is not None:
+            if existing.end_token >= chunk.end_token:
+                # Resident version covers at least as many tokens — keep it.
+                self.policy.record_access(existing)
+                return CacheStoreResult(stored_chunk=existing, evicted_chunks=())
+            # Resident version has partial coverage — remove it before storing.
+            self.tier.remove(existing.cache_id, existing.chunk_index)
+            self.policy.record_remove(existing)
+
+        evicted_chunks: list[KVChunk] = []
+        while not self.tier.can_store(chunk):
+            victim = self.policy.choose_victim(self.tier)
+            removed = self.tier.remove(victim.cache_id, victim.chunk_index)
+            self.policy.record_remove(removed)
+            evicted_chunks.append(removed)
+
+        stored_chunk = self.tier.store(chunk)
+        self.policy.record_store(stored_chunk)
+        return CacheStoreResult(
+            stored_chunk=stored_chunk,
+            evicted_chunks=tuple(evicted_chunks),
+        )
+
     def contains(self, cache_id: str, chunk_index: int) -> bool:
         """Return whether the managed tier contains a chunk."""
 

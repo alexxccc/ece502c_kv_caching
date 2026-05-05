@@ -182,6 +182,20 @@ class MemoryTier:
 
         return chunk.size_bytes / self.bandwidth_bytes_per_ms
 
+    def upsert(self, chunk: KVChunk) -> KVChunk | None:
+        """Store chunk only if it has strictly greater end_token coverage than any
+        existing entry at the same cache key.  Never downgrades an already-cached
+        version.  Returns the newly stored chunk, or None if the existing entry
+        already covers at least as many tokens.
+        """
+        existing = self.chunks.get(chunk.cache_key)
+        if existing is not None and existing.end_token >= chunk.end_token:
+            return None
+        if existing is not None:
+            # Remove old entry so capacity accounting is based on the net change.
+            del self.chunks[chunk.cache_key]
+        return self.store(chunk)
+
     def iter_chunks_by_priority(self, reverse: bool = False) -> Iterable[KVChunk]:
         """Iterate over chunks ordered by Late-Token Priority.
 
@@ -196,6 +210,78 @@ class MemoryTier:
                 reverse=reverse,
             )
         )
+
+
+def chunk_request_with_prefix_split(
+    request: Request,
+    chunk_size_tokens: int,
+    bytes_per_token: int,
+) -> list[KVChunk]:
+    """Split a request into shared-prefix chunks and private-suffix chunks.
+
+    Chunks covering [0, shared_prefix_tokens) use ``request.cache_id`` (the
+    document id) so they can be reused across requests that reference the same
+    document.  Chunks covering [shared_prefix_tokens, prompt_tokens) use a
+    per-request cache id (``<request_id>-private``) so they are never matched
+    against another request's cached data.
+
+    The last shared chunk may be smaller than ``chunk_size_tokens`` when
+    ``shared_prefix_tokens`` is not an exact multiple of the chunk size —
+    this is the variable-size boundary block.  All chunk indices are
+    continuous across both regions (they do not restart at the private
+    boundary) so ``by_index`` dicts in the materialisation layer never
+    collide between the two regions.
+
+    When ``shared_prefix_tokens == 0`` the entire prompt is private.
+    When ``shared_prefix_tokens == prompt_tokens`` the entire prompt is
+    treated as a potentially-reusable shared prefix (degenerate case).
+    """
+
+    if chunk_size_tokens <= 0:
+        raise ValueError("chunk_size_tokens must be positive")
+    if bytes_per_token <= 0:
+        raise ValueError("bytes_per_token must be positive")
+
+    private_cache_id = f"{request.request_id}-private"
+    chunks: list[KVChunk] = []
+    chunk_index = 0
+    pos = 0
+
+    # Shared prefix region — uses the document cache_id.
+    while pos < request.shared_prefix_tokens:
+        end = min(pos + chunk_size_tokens, request.shared_prefix_tokens)
+        token_count = end - pos
+        chunks.append(
+            KVChunk(
+                request_id=request.request_id,
+                cache_id=request.cache_id,
+                chunk_index=chunk_index,
+                start_token=pos,
+                end_token=end,
+                size_bytes=token_count * bytes_per_token,
+            )
+        )
+        chunk_index += 1
+        pos = end
+
+    # Private suffix region — unique cache_id per request.
+    while pos < request.prompt_tokens:
+        end = min(pos + chunk_size_tokens, request.prompt_tokens)
+        token_count = end - pos
+        chunks.append(
+            KVChunk(
+                request_id=request.request_id,
+                cache_id=private_cache_id,
+                chunk_index=chunk_index,
+                start_token=pos,
+                end_token=end,
+                size_bytes=token_count * bytes_per_token,
+            )
+        )
+        chunk_index += 1
+        pos = end
+
+    return chunks
 
 
 def chunk_request(

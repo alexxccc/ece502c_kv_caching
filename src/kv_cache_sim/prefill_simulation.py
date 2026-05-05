@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import Enum
+from typing import Mapping
 
 from kv_cache_sim.cache import CacheManager
 from kv_cache_sim.models import CachePlacement, KVChunk, MemoryTier
@@ -15,6 +17,8 @@ from kv_cache_sim.scheduler import (
     ScheduleAction,
     ScheduleSummary,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class LinearScheduleMode(str, Enum):
@@ -32,35 +36,39 @@ class PrefillMetrics:
     recompute_count: int
     load_count: int
     eviction_count: int
+    coverage_miss_count: int
     gpu_chunks_after: int
     gpu_used_bytes: int
 
 
-def _materialize_cake_to_gpu(
-    summary: CakeScheduleSummary,
-    request_chunks: list[KVChunk],
-    gpu_cache: CacheManager,
-    tiers_by_placement: dict[CachePlacement, MemoryTier],
-) -> int:
-    """Apply Cake operations to the managed GPU tier; return eviction count."""
-
-    by_index = {op.chunk.chunk_index: op for op in summary.operations}
-    return _materialize_schedule_entries_to_gpu(by_index, request_chunks, gpu_cache, tiers_by_placement)
-
-
 def _materialize_schedule_entries_to_gpu(
-    by_index: dict[int, object],
+    by_index: Mapping[int, object],
     request_chunks: list[KVChunk],
     gpu_cache: CacheManager,
     tiers_by_placement: dict[CachePlacement, MemoryTier],
-) -> int:
-    """Materialize in phases so RECOMPUTE stores cannot evict KV needed for GPU loads.
+    write_through_tiers: list[MemoryTier],
+) -> tuple[int, int]:
+    """Materialize scheduled operations against the GPU cache and write-through tiers.
 
-    Chunk-index order alone can process RECOMPUTE before LOAD-from-GPU for higher
-    indices; eviction may remove chunks the scheduler expected to hit.
+    Returns ``(eviction_count, coverage_miss_count)``.
+
+    Execution is phased to avoid a subtle ordering hazard: RECOMPUTE operations
+    could evict chunks that a later LOAD-from-GPU was counting on.  By running
+    GPU loads first, those hits are secured before any eviction pressure.
+
+        Phase 1 — GPU loads   (LOAD, source == GPU)
+        Phase 2 — cold loads  (LOAD, source != GPU)
+        Phase 3 — recomputes  (RECOMPUTE)
+
+    On RECOMPUTE, the fresh chunk is written to the GPU tier via
+    ``CacheManager.store_replacing`` (which upgrades a partially-covered
+    resident version if one exists) and then upserted to every
+    ``write_through_tiers`` entry so later requests can load rather than
+    recompute.  The upsert never downgrades existing coverage on disk.
     """
 
     eviction_count = 0
+    coverage_miss_count = 0
     key_chunk = {c.chunk_index: c for c in request_chunks}
     gpu_name = gpu_cache.tier.name
 
@@ -72,54 +80,76 @@ def _materialize_schedule_entries_to_gpu(
 
     indices = sorted(key_chunk.keys())
 
-    def run_gpu_loads() -> None:
-        for chunk_index in indices:
-            action, source_tier = action_src(chunk_index)
-            if action != ScheduleAction.LOAD or source_tier != gpu_name:
-                continue
-            cached = gpu_cache.access(key_chunk[chunk_index].cache_id, chunk_index)
-            if cached is None:
-                raise ValueError(
-                    f"scheduled LOAD from GPU but chunk {chunk_index} is missing"
-                )
-
-    def run_cold_loads() -> None:
-        nonlocal eviction_count
-        for chunk_index in indices:
-            action, source_tier = action_src(chunk_index)
-            if action != ScheduleAction.LOAD or source_tier is None:
-                continue
-            if source_tier == gpu_name:
-                continue
-            cold_tier = _tier_for_placement(tiers_by_placement, source_tier)
-            cache_key = key_chunk[chunk_index].cache_key
-            stored_source = cold_tier.chunks.get(cache_key)
-            if stored_source is None:
-                raise ValueError(
-                    f"scheduled LOAD from {source_tier.value} but chunk {cache_key} is not present"
-                )
-            result = gpu_cache.store(stored_source)
-            eviction_count += len(result.evicted_chunks)
-
-    def run_recomputes() -> None:
-        nonlocal eviction_count
-        for chunk_index in indices:
-            action, _ = action_src(chunk_index)
-            if action != ScheduleAction.RECOMPUTE:
-                continue
-            chunk = key_chunk[chunk_index]
-            result = gpu_cache.store(chunk)
-            eviction_count += len(result.evicted_chunks)
-
+    # Phase 1: secure GPU-resident loads before any eviction pressure.
     for chunk_index in indices:
         action, source_tier = action_src(chunk_index)
-        if action == ScheduleAction.LOAD and source_tier is None:
-            raise ValueError("LOAD operation missing source_tier")
+        if action != ScheduleAction.LOAD or source_tier != gpu_name:
+            continue
+        cached = gpu_cache.access(key_chunk[chunk_index].cache_id, chunk_index)
+        if cached is None:
+            raise ValueError(
+                f"scheduled LOAD from GPU but chunk {chunk_index} is missing"
+            )
 
-    run_gpu_loads()
-    run_cold_loads()
-    run_recomputes()
-    return eviction_count
+    # Phase 2: cold-tier loads → bring into GPU.
+    for chunk_index in indices:
+        action, source_tier = action_src(chunk_index)
+        if action != ScheduleAction.LOAD or source_tier is None:
+            continue
+        if source_tier == gpu_name:
+            continue
+        cold_tier = _tier_for_placement(tiers_by_placement, source_tier)
+        cache_key = key_chunk[chunk_index].cache_key
+        stored_source = cold_tier.chunks.get(cache_key)
+        if stored_source is None:
+            raise ValueError(
+                f"scheduled LOAD from {source_tier.value} but chunk {cache_key} "
+                "is not present"
+            )
+        result = gpu_cache.store(stored_source)
+        eviction_count += len(result.evicted_chunks)
+
+    # Phase 3: recomputes → update GPU and write through to persistent tiers.
+    for chunk_index in indices:
+        action, _ = action_src(chunk_index)
+        if action != ScheduleAction.RECOMPUTE:
+            continue
+
+        chunk = key_chunk[chunk_index]
+
+        # Detect whether a partial entry existed (for coverage miss accounting).
+        for tier in [gpu_cache.tier, *write_through_tiers]:
+            resident = tier.chunks.get(chunk.cache_key)
+            if resident is not None and resident.end_token < chunk.end_token:
+                coverage_miss_count += 1
+                logger.debug(
+                    "recompute chunk (%s, %d): replacing partial coverage "
+                    "end=%d with end=%d in %s",
+                    chunk.cache_id,
+                    chunk.chunk_index,
+                    resident.end_token,
+                    chunk.end_token,
+                    tier.name.value,
+                )
+                break
+
+        # Store on GPU, replacing any partial-coverage resident.
+        result = gpu_cache.store_replacing(chunk)
+        eviction_count += len(result.evicted_chunks)
+
+        # Write-through: persist to cold tiers, never downgrading coverage.
+        for wt_tier in write_through_tiers:
+            stored = wt_tier.upsert(chunk)
+            if stored is not None:
+                logger.debug(
+                    "write-through chunk (%s, %d) end=%d to %s",
+                    chunk.cache_id,
+                    chunk.chunk_index,
+                    chunk.end_token,
+                    wt_tier.name.value,
+                )
+
+    return eviction_count, coverage_miss_count
 
 
 def _tier_for_placement(
@@ -145,23 +175,33 @@ def simulate_cake_prefill_with_global_cache(
     gpu_cache: CacheManager,
     cost_model: CostModel,
     cold_tiers: list[MemoryTier] | None = None,
+    write_through_tiers: list[MemoryTier] | None = None,
 ) -> tuple[CakeScheduleSummary, PrefillMetrics]:
-    """Run Cake bidirectional scheduling, then materialize KV onto the GPU tier.
+    """Run Cake bidirectional scheduling, then materialise KV onto the GPU tier.
 
-    The scheduler sees the GPU tier (from ``gpu_cache``) plus any optional cold
-    tiers (CPU/disk) so the I/O front can load warm KV from slower storage.
-    Recomputed chunks and loads from cold tiers call :meth:`CacheManager.store`;
-    loads from the GPU tier call :meth:`CacheManager.access` for hit accounting.
+    ``cold_tiers`` are visible to the scheduler for LOAD decisions (e.g. disk).
+    ``write_through_tiers`` receive a copy of every freshly RECOMPUTE'd chunk so
+    later requests can LOAD instead of recompute — pass the same disk tier for
+    both to get the causal write-through behaviour described in the design.
+
+    Recomputed chunks and loads from cold tiers call
+    :meth:`CacheManager.store_replacing` or :meth:`CacheManager.store`;
+    loads from the GPU tier call :meth:`CacheManager.access` for hit
+    accounting.
     """
-
     cold_tiers = cold_tiers or []
+    write_through_tiers = write_through_tiers or []
     memory_tiers: list[MemoryTier] = [gpu_cache.tier, *cold_tiers]
     tiers_by_placement = _tiers_dict(memory_tiers)
 
-    scheduler = CakeBidirectionalScheduler(memory_tiers=memory_tiers, cost_model=cost_model)
+    scheduler = CakeBidirectionalScheduler(
+        memory_tiers=memory_tiers, cost_model=cost_model
+    )
     summary = scheduler.schedule_chunks(chunks)
-    eviction_count = _materialize_cake_to_gpu(
-        summary, chunks, gpu_cache, tiers_by_placement
+
+    by_index = {op.chunk.chunk_index: op for op in summary.operations}
+    eviction_count, coverage_miss_count = _materialize_schedule_entries_to_gpu(
+        by_index, chunks, gpu_cache, tiers_by_placement, write_through_tiers
     )
 
     metrics = PrefillMetrics(
@@ -169,6 +209,7 @@ def simulate_cake_prefill_with_global_cache(
         recompute_count=summary.recompute_count,
         load_count=summary.load_count,
         eviction_count=eviction_count,
+        coverage_miss_count=coverage_miss_count,
         gpu_chunks_after=len(gpu_cache.tier.chunks),
         gpu_used_bytes=gpu_cache.tier.used_bytes,
     )
@@ -180,46 +221,39 @@ def simulate_linear_prefill_with_global_cache(
     gpu_cache: CacheManager,
     cost_model: CostModel,
     cold_tiers: list[MemoryTier] | None = None,
+    write_through_tiers: list[MemoryTier] | None = None,
     aggregate: LinearScheduleMode = LinearScheduleMode.SUM,
 ) -> tuple[ScheduleSummary, PrefillMetrics]:
-    """Sequential per-chunk recompute/load choices (no Cake bidirectional TTFT)."""
+    """Sequential per-chunk recompute/load choices (no Cake bidirectional TTFT).
 
+    ``write_through_tiers`` behaves identically to the Cake variant — every
+    RECOMPUTE is persisted to those tiers so the causal simulation stays warm.
+    """
     cold_tiers = cold_tiers or []
+    write_through_tiers = write_through_tiers or []
     memory_tiers: list[MemoryTier] = [gpu_cache.tier, *cold_tiers]
     tiers_by_placement = _tiers_dict(memory_tiers)
 
-    scheduler = RecomputeLoadScheduler(memory_tiers=memory_tiers, cost_model=cost_model)
+    scheduler = RecomputeLoadScheduler(
+        memory_tiers=memory_tiers, cost_model=cost_model
+    )
     summary = scheduler.schedule_chunks(chunks)
-    eviction_count = _materialize_linear_to_gpu(
-        summary, chunks, gpu_cache, tiers_by_placement
+
+    by_index = {d.chunk.chunk_index: d for d in summary.decisions}
+    eviction_count, coverage_miss_count = _materialize_schedule_entries_to_gpu(
+        by_index, chunks, gpu_cache, tiers_by_placement, write_through_tiers
     )
 
     times = [decision.estimated_time_ms for decision in summary.decisions]
-    if aggregate == LinearScheduleMode.SUM:
-        ttft = sum(times)
-    else:
-        ttft = max(times) if times else 0.0
+    ttft = sum(times) if aggregate == LinearScheduleMode.SUM else (max(times) if times else 0.0)
 
     metrics = PrefillMetrics(
         estimated_ttft_ms=ttft,
         recompute_count=summary.recompute_count,
         load_count=summary.load_count,
         eviction_count=eviction_count,
+        coverage_miss_count=coverage_miss_count,
         gpu_chunks_after=len(gpu_cache.tier.chunks),
         gpu_used_bytes=gpu_cache.tier.used_bytes,
     )
     return summary, metrics
-
-
-def _materialize_linear_to_gpu(
-    summary: ScheduleSummary,
-    request_chunks: list[KVChunk],
-    gpu_cache: CacheManager,
-    tiers_by_placement: dict[CachePlacement, MemoryTier],
-) -> int:
-    """Materialize linear scheduler decisions using the same phased order as Cake."""
-
-    by_index = {decision.chunk.chunk_index: decision for decision in summary.decisions}
-    return _materialize_schedule_entries_to_gpu(
-        by_index, request_chunks, gpu_cache, tiers_by_placement
-    )

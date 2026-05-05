@@ -50,34 +50,23 @@ We specifically used the proposal feedback in these design choices:
 
 ## Current Status
 
-Currently this version contains the project idea, main simulator data models, the
-first eviction policies, a cost-aware recompute-vs-load scheduler, and a
-Cake-style bidirectional scheduler.
-
 Implemented so far:
 
-- request and KV chunk data models
-- global cache IDs for cross-request KV reuse
-- memory-tier model for GPU, CPU, and disk-like storage
-- cache-placement helpers
-- fixed-size and variable-size chunking helpers
-- policy-driven cache manager
+- `Request` / `KVChunk` / `MemoryTier` data models
+- Global `cache_id` for cross-request KV reuse; per-request `request_id` for metrics
+- `chunk_request_with_prefix_split`: splits a prompt into a **shared prefix region** (keyed by `cache_id`, reusable across requests that share the same document) and a **private suffix region** (keyed by `request_id`, unique to each request); variable-length boundary chunk ends exactly at `shared_prefix_tokens`
+- Fixed-size and variable-size chunking helpers
+- Policy-driven `CacheManager` with `store_replacing` (upgrades partial-coverage residents) and `MemoryTier.upsert` (never downgrades coverage)
 - FIFO, LRU, and Late-Token Priority eviction policies
-- cost model for recompute-vs-load scheduling
-- scheduler that chooses whether each chunk should be recomputed or loaded
-- Cake-style scheduler that computes from the beginning while loading from the end
-- a small example script that builds a simple cache state
-- a Cake-style bidirectional scheduling example
-- a policy comparison script that forces evictions
-- a global-cache reuse example with two requests sharing one prefix
-- a recompute-vs-load scheduling example
-- **Cake prefill + global GPU cache** (`prefill_simulation.py`): run Cake (or
-  linear baseline), then materialize KV onto a policy-managed GPU tier with optional cold tiers
-- **synthetic workloads** (`workload.py`): repeatable random requests over a document pool
-- **experiment driver** (`examples/run_cake_global_experiment.py`): compare Cake vs linear
-  scheduling with FIFO / LRU / Late-Token Priority; CSV metrics and matplotlib figures under `results/`
+- Coverage-aware chunk lookup: a cache hit is only valid if the stored chunk covers the full needed token range (`end_token >= needed.end_token`)
+- `CostModel`: attention cost scales with chunk position (later chunks are more expensive to recompute, matching Cake's core observation); load cost is byte-accurate from tier bandwidth
+- `RecomputeLoadScheduler`: independent per-chunk recompute-vs-load decisions
+- `CakeBidirectionalScheduler`: bidirectional two-front schedule with boolean-array progress tracking; I/O front skips uncached chunks at zero cost; Phase 2 sweeps remaining unscheduled chunks
+- `simulate_cake_prefill_with_global_cache` / `simulate_linear_prefill_with_global_cache`: schedule chunks, then materialize KV onto a policy-managed GPU tier; **write-through on every RECOMPUTE** persists chunks to disk so later requests can LOAD instead of recompute; disk starts empty (causal, no pre-warming)
+- `WorkloadConfig` / `generate_requests`: repeatable causal request streams; each request draws a variable-length shared prefix from a document pool plus an independent private suffix; supports `uniform`, `round_robin`, and `skewed` document-selection strategies
+- Experiment driver `examples/run_cake_global_experiment.py`: Cake vs sequential baseline × FIFO / LRU / LTP across named presets; writes `results/metrics.csv`, `results/summary_by_scenario.csv`, five PNG figures, and `results/sim_debug.log`
 
-Further documentation for these additions: [docs/ADDED_FEATURES.md](docs/ADDED_FEATURES.md).
+Further documentation: [docs/ADDED_FEATURES.md](docs/ADDED_FEATURES.md).
 
 ## Repository Layout
 
