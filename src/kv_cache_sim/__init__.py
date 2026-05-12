@@ -10,7 +10,7 @@ from kv_cache_sim.models import (
     chunk_request_with_prefix_split,
     chunk_request_with_sizes,
 )
-from kv_cache_sim.policies import FIFOPolicy, LRUPolicy, LateTokenPriorityPolicy
+from kv_cache_sim.policies import FIFOPolicy, FrequencyTokenPriorityPolicy, LRUPolicy, LateTokenPriorityPolicy
 from kv_cache_sim.prefill_simulation import (
     LinearScheduleMode,
     PrefillMetrics,
@@ -42,6 +42,7 @@ __all__ = [
     "CakeScheduleSummary",
     "CostModel",
     "FIFOPolicy",
+    "FrequencyTokenPriorityPolicy",
     "KVChunk",
     "LRUPolicy",
     "LateTokenPriorityPolicy",

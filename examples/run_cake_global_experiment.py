@@ -40,7 +40,7 @@ from kv_cache_sim.models import (
     Request,
     chunk_request_with_prefix_split,
 )
-from kv_cache_sim.policies import EvictionPolicy, FIFOPolicy, LateTokenPriorityPolicy, LRUPolicy
+from kv_cache_sim.policies import EvictionPolicy, FIFOPolicy, FrequencyTokenPriorityPolicy, LateTokenPriorityPolicy, LRUPolicy
 from kv_cache_sim.prefill_simulation import (
     LinearScheduleMode,
     PrefillMetrics,
@@ -181,10 +181,13 @@ def _make_scenarios(schedulers: str) -> tuple[Scenario, ...]:
         Scenario("cake_ltp", LateTokenPriorityPolicy(), True),
         Scenario("cake_fifo", FIFOPolicy(), True),
         Scenario("cake_lru", LRUPolicy(), True),
+        Scenario("cake_fltp", FrequencyTokenPriorityPolicy(), True),
     )
     linear = (
         Scenario("linear_ltp", LateTokenPriorityPolicy(), False),
         Scenario("linear_fifo", FIFOPolicy(), False),
+        Scenario("linear_lru", LRUPolicy(), False),
+        Scenario("linear_fltp", FrequencyTokenPriorityPolicy(), False),
     )
     if schedulers == "cake_only":
         return cake
@@ -196,7 +199,7 @@ def _make_scenarios(schedulers: str) -> tuple[Scenario, ...]:
 def _run_one_preset(
     args: argparse.Namespace,
     output_dir: Path,
-) -> dict[str, dict[str, float]]:
+) -> tuple[dict[str, dict[str, float]], list[dict[str, Any]]]:
     """Run all scenarios for one configuration, save outputs, return summary."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -288,11 +291,11 @@ def _run_one_preset(
     try:
         import matplotlib.pyplot as plt
     except ImportError:
-        return summary
+        return summary, csv_rows
 
     _save_per_preset_plots(plt, output_dir, summary)
     print(f"  Saved plots -> {output_dir}")
-    return summary
+    return summary, csv_rows
 
 
 def _save_per_preset_plots(plt: Any, out_dir: Path, summary: dict[str, dict[str, float]]) -> None:
@@ -451,6 +454,7 @@ def main() -> None:
         agg_dir = args.output_dir / "presets"
         agg_dir.mkdir(parents=True, exist_ok=True)
         all_summaries: dict[str, dict[str, dict[str, float]]] = {}
+        all_csv_rows: list[dict[str, Any]] = []
 
         for preset_name in PRESETS:
             print(f"\n=== Preset: {preset_name} ===")
@@ -458,9 +462,29 @@ def main() -> None:
             for key, value in PRESETS[preset_name].items():
                 setattr(preset_args, key, value)
             out = agg_dir / preset_name
-            summary = _run_one_preset(preset_args, out)
+            summary, csv_rows = _run_one_preset(preset_args, out)
             all_summaries[preset_name] = summary
+            for row in csv_rows:
+                all_csv_rows.append({"preset": preset_name, **row})
             print(f"  Done: {out}")
+
+        # Combined metrics across all presets.
+        write_csv(agg_dir / "metrics_all_presets.csv", all_csv_rows)
+
+        # Per-scenario averages across presets.
+        scenario_names = list(next(iter(all_summaries.values())).keys())
+        metric_keys = ["mean_ttft_ms", "total_evictions", "total_recompute",
+                       "total_load", "total_coverage_misses"]
+        avg_summary_rows = []
+        for sc in scenario_names:
+            row: dict[str, Any] = {"scenario": sc}
+            for mk in metric_keys:
+                vals = [all_summaries[p][sc][mk] for p in all_summaries if sc in all_summaries[p]]
+                row[f"avg_{mk}"] = sum(vals) / max(len(vals), 1)
+            avg_summary_rows.append(row)
+        write_csv(agg_dir / "summary_avg_across_presets.csv", avg_summary_rows)
+        print(f"\n  Wrote {agg_dir / 'metrics_all_presets.csv'}")
+        print(f"  Wrote {agg_dir / 'summary_avg_across_presets.csv'}")
 
         if plt is not None:
             print(f"\n=== Aggregate plots -> {agg_dir} ===")
