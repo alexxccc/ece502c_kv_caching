@@ -142,7 +142,7 @@ class FrequencyTokenPriorityPolicy(EvictionPolicy):
 
     def _score(self, chunk: KVChunk) -> tuple[float, int]:
         key = chunk_key(chunk)
-        keep = math.log1p(chunk.end_token) * (2 + self._access_count.get(key, 0))
+        keep = math.log1p(chunk.end_token) * math.log(2 + self._access_count.get(key, 0))
         age = self._insert_order.get(key, 0)
         return keep, age  # evict min keep; break ties by evicting oldest (min age)
 

@@ -151,7 +151,7 @@ PRESETS: dict[str, dict[str, Any]] = {
     },
     # Inflated attention cost makes late-sequence recompute expensive.
     "steep_late_recompute_cost": {
-        "attention_mult": 120.0,
+        "attention_mult": 4.0,
         "gpu_mb": 8,
         "num_requests": 128,
     },
