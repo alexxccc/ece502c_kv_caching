@@ -98,51 +98,37 @@ Further documentation: [docs/ADDED_FEATURES.md](docs/ADDED_FEATURES.md).
 +-- README.md
 ```
 
-## Running the Examples
+## How to Run
 
-From this directory, set `PYTHONPATH` so imports resolve (`src` contains `kv_cache_sim`):
-
-**Linux / macOS**
+Install the optional plotting dependency first:
 
 ```bash
-export PYTHONPATH=src
-pip install -r requirements.txt   # optional, for experiment graphs
+pip install -r requirements.txt
+```
 
-python examples/basic_simulation.py
-python examples/cake_bidirectional_schedule.py
-python examples/cake_global_cache_prefill.py
-python examples/choose_recompute_vs_load.py
-python examples/compare_eviction_policies.py
-python examples/global_cache_reuse.py
+**Run all presets (recommended)** — generates per-preset subfolders and cross-preset aggregate plots under `results/presets/`:
+
+```powershell
+# Windows
+$env:PYTHONPATH="src"
+python examples/run_cake_global_experiment.py --all-presets
+```
+
+```bash
+# Linux / macOS
+PYTHONPATH=src python examples/run_cake_global_experiment.py --all-presets
+```
+
+**Run a single named preset:**
+
+```powershell
+python examples/run_cake_global_experiment.py --preset hot_document_skew
+```
+
+**Run with default settings** (results go to `results/`):
+
+```powershell
 python examples/run_cake_global_experiment.py
 ```
 
-**Windows (PowerShell)**
-
-```powershell
-$env:PYTHONPATH="src"
-pip install -r requirements.txt
-
-python .\examples\basic_simulation.py
-python .\examples\cake_bidirectional_schedule.py
-python .\examples\cake_global_cache_prefill.py
-python .\examples\choose_recompute_vs_load.py
-python .\examples\compare_eviction_policies.py
-python .\examples\global_cache_reuse.py
-python .\examples\run_cake_global_experiment.py
-```
-
-1. The basic example prints a few synthetic KV chunks, places them into a GPU
-memory tier, and shows how much capacity remains.
-2. The policy comparison example fills a small GPU tier and shows which chunk
-each eviction policy removes.
-3. The global-cache example shows two different requests reusing the same cached
-prefix through a shared `cache_id`.
-4. The scheduler example estimates recompute and load time for each chunk,
-then chooses the cheaper action.
-5. The Cake-style example simulates compute moving forward from the first chunk
-while I/O loads backward from the last chunk.
-6. **`cake_global_cache_prefill`** ties Cake scheduling to a Late-Token global GPU cache and disk-backed KV.
-7. **`run_cake_global_experiment`** compares scenarios (Cake vs sequential baseline × eviction policies) and writes `results/metrics.csv`, `results/summary_by_scenario.csv`, and PNG figures when matplotlib is installed.
-
-Interpretation of experiment outputs and representative numbers: [results/README.md](results/README.md).
+Each run writes `metrics.csv`, `summary_by_scenario.csv`, five PNG figures, and `sim_debug.log` to its output directory. The `--all-presets` run additionally writes `metrics_all_presets.csv` and `summary_avg_across_presets.csv` to `results/presets/`.
